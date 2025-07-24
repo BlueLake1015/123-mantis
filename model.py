@@ -21,7 +21,7 @@
 # THE SOFTWARE.
 
 import config
-import os, time, csv
+import os, time, csv, json
 from datetime import datetime
 
 import torch
@@ -221,5 +221,7 @@ def salience(
         logger.warning("Total importance is zero. Salience cannot be determined, skipping weight set.")
         return {}
 
+    sorted_salience = dict(sorted(salience_dict.items(), key=lambda item: item[1], reverse=True))
+    logger.info("Salience Dict (sorted):\n%s", json.dumps(sorted_salience, indent=4))
     logger.info("XGBoost-based salience computation complete in %.2fs", time.time() - t0)
     return salience_dict

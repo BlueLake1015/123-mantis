@@ -250,21 +250,30 @@ async def run_main_loop(
                         if w.sum() <= 0:
                             weights_logger.warning("Zero-sum weights, skipping set.")
                             return
+                            
+                        weights_logger.info(f"Weights sum: {w.sum()}")
+                        weights_logger.info(f"Weights max: {w.max()}")
+                        weights_logger.info(f"Weights min: {w.min()}")
+                        weights_logger.info(f"Weights mean: {w.mean()}")
+                        weights_logger.info(f"Weights std: {w.std()}")
+                        weights_logger.info(f"Weights median: {w.median()}")
+                        weights_logger.info(f"Weights mode: {w.mode()}")
+                        weights_logger.info(f"Weights: {w}")
                         
-                        try:
-                            thread_sub = bt.subtensor(network=cli_args.network)
-                            thread_wallet = bt.wallet(
-                                name=getattr(cli_args, "wallet.name"), 
-                                hotkey=getattr(cli_args, "wallet.hotkey")
-                            )
-                            thread_sub.set_weights(
-                                netuid=cli_args.netuid, wallet=thread_wallet,
-                                uids=metagraph.uids, weights=w / w.sum(),
-                                wait_for_inclusion=False,
-                            )
-                            weights_logger.info(f"Weights set at block {block_snapshot} (max={w.max():.4f})")
-                        except Exception as e:
-                            weights_logger.error(f"Failed to set weights: {e}", exc_info=True)
+                        # try:
+                        #     thread_sub = bt.subtensor(network=cli_args.network)
+                        #     thread_wallet = bt.wallet(
+                        #         name=getattr(cli_args, "wallet.name"), 
+                        #         hotkey=getattr(cli_args, "wallet.hotkey")
+                        #     )
+                        #     thread_sub.set_weights(
+                        #         netuid=cli_args.netuid, wallet=thread_wallet,
+                        #         uids=metagraph.uids, weights=w / w.sum(),
+                        #         wait_for_inclusion=False,
+                        #     )
+                        #     weights_logger.info(f"Weights set at block {block_snapshot} (max={w.max():.4f})")
+                        # except Exception as e:
+                        #     weights_logger.error(f"Failed to set weights: {e}", exc_info=True)
 
                     max_block_for_training = current_block - config.TASK_INTERVAL
                     async with datalog._lock:

@@ -1,0 +1,1 @@
+python -m miner.client_random --wallet.name mantis1 --wallet.hotkey h00

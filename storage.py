@@ -192,7 +192,7 @@ class DataLog:
             for asset in config.ASSETS
         }
 
-    def _parse_and_validate_submission(self, submission: Any) -> Dict[str, List[float]]:
+    def _parse_and_validate_submission(self, submission: Any, uid: int) -> Dict[str, List[float]]:
         """
         Parse and validate miner submission for the multi-asset format.
         
@@ -205,22 +205,25 @@ class DataLog:
                 all(isinstance(asset_vec, list) for asset_vec in submission)):
                 
                 result = {}
+                logged = False
                 for i, asset in enumerate(config.ASSETS):
                     asset_vec = submission[i]
                     if self._validate_single_asset_vector(asset_vec, asset):
                         result[asset] = asset_vec
                     else:
-                        logger.warning(f"Invalid embedding for asset {asset}")
+                        if not logged:
+                            logger.warning(f"Invalid embedding for asset {asset} for UID {uid}, will skip same log for other assets")
+                            logged = True
                         result[asset] = [0.0] * config.ASSET_EMBEDDING_DIMS[asset]
                 
                 return result
             
             # Invalid format
-            logger.warning(f"Invalid submission format: {type(submission)}")
+            logger.warning(f"Invalid submission format: {type(submission)} for UID {uid}")
             return self._create_zero_embeddings()
             
         except Exception as e:
-            logger.warning(f"Error parsing submission: {e}")
+            logger.warning(f"Error parsing submission: {e} for UID {uid}")
             return self._create_zero_embeddings()
 
     def _validate_single_asset_vector(self, vector: Any, asset: str) -> bool:
@@ -299,7 +302,7 @@ class DataLog:
                 if not sig:
                     return
 
-                logger.info(f"Decrypting batch of {len(items)} payloads for Drand round {round_num}")
+                #logger.info(f"Decrypting batch of {len(items)} payloads for Drand round {round_num}")
                 for item in items:
                     ts, uid, ct_hex = item["ts"], item["uid"], item["ct_hex"]
                     is_valid = False
@@ -324,7 +327,7 @@ class DataLog:
                             raise ValueError(f"Hotkey mismatch for UID {uid}. Expected {expected_hotkey[:8]}, got {payload_hotkey[:8]}")
 
                         submission = ast.literal_eval(embeddings_str)
-                        result = self._parse_and_validate_submission(submission)
+                        result = self._parse_and_validate_submission(submission, uid)
                         is_valid = True
                     except Exception as e:
                         logger.warning(f"tlock decryption failed for UID {uid} at ts {ts}: {e}")

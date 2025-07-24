@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+MANTIS.egg-info/PKG-INFO
+MANTIS.egg-info/SOURCES.txt
+MANTIS.egg-info/dependency_links.txt
+MANTIS.egg-info/requires.txt
+MANTIS.egg-info/top_level.txt
+miner/client_kingai.py
+miner/client_random.py
+miner/client_v1.py
+miner/commit.py
+miner/upload.py
+miner/utils.py
