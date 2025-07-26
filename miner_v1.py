@@ -590,7 +590,7 @@ class MANTISMiner:
             
             # Create plaintext with hotkey signature
             plaintext = f"{str(embeddings)}:::{self.wallet.hotkey.ss58_address}"
-            
+            logger.info(f"Plaintext: {plaintext}")
             # Encrypt
             salt = secrets.token_bytes(32)
             ciphertext_hex = self.timelock.tle(target_round, plaintext, salt).hex()
@@ -680,10 +680,12 @@ class MANTISMiner:
         
         while True:
             try:
+                start_time = time.time()
                 await self.mining_cycle()
-                
-                # Wait for next update
-                await asyncio.sleep(update_interval)
+                elapsed = time.time() - start_time
+                sleep_time = max(0, update_interval - elapsed)
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
                 
             except KeyboardInterrupt:
                 logger.info("Miner stopped by user")
