@@ -69,6 +69,7 @@ class DataLog:
         self.plaintext_cache: List[Dict[int, Dict[str, List[float]]]] = []
         self.raw_payloads: Dict[int, Dict[int, dict]] = {}
         self.uid_owner: Dict[int, str] = {}
+        self.uid_age_in_blocks: Dict[int, int] = {}
 
         self._lock = asyncio.Lock()
 
@@ -102,8 +103,58 @@ class DataLog:
                         f"Ownership change for UID {uid}: '{prev_hotkey[:8]}...' -> '{hotkey[:8]}...'. "
                         f"Wiping history for this UID."
                     )
+                    # Wipe historical data for the UID before backfilling.
+                    [sc.pop(uid, None) for sc in self.plaintext_cache]
+                    [sp.pop(uid, None) for sp in self.raw_payloads.values()]
+
                     self.uid_owner[uid] = hotkey
                     self._backfill_new_uid_unsafe(uid)
+
+            self._recompute_uid_age_unsafe()
+
+    def _recompute_uid_age_unsafe(self):
+        """Recomputes the age of each UID based on its first valid payload."""
+        logger.info("Recomputing UID age in blocks...")
+        first_payload_timestep = {}
+        
+        all_uids = self._get_all_uids_unsafe()
+        for uid in all_uids:
+            for ts, cache_step in enumerate(self.plaintext_cache):
+                if uid in cache_step:
+                    assets_data = cache_step[uid]
+                    is_zero = all(v == 0.0 for asset_vec in assets_data.values() for v in asset_vec)
+                    if not is_zero:
+                        first_payload_timestep[uid] = ts
+                        break
+        
+        current_block = self.blocks[-1] if self.blocks else 0
+        self.uid_age_in_blocks = {}
+        for uid, ts in first_payload_timestep.items():
+            if ts < len(self.blocks):
+                first_block = self.blocks[ts]
+                self.uid_age_in_blocks[uid] = current_block - first_block
+        
+        logger.info(f"UID ages recomputed for {len(self.uid_age_in_blocks)} UIDs.")
+
+    def recompute_uid_ages(self):
+        """Public method to trigger UID age recalculation, intended for scripts."""
+        self._recompute_uid_age_unsafe()
+
+    def compute_and_display_uid_ages(self):
+        """Computes and displays the age of each UID in blocks and hours."""
+        if not self.uid_age_in_blocks:
+            logger.info("No UID ages to display.")
+            return
+        
+        logger.info("--- UID Ages ---")
+        sorted_uids = sorted(self.uid_age_in_blocks.keys())
+        
+        for uid in sorted_uids:
+            age_in_blocks = self.uid_age_in_blocks[uid]
+            age_in_hours = (age_in_blocks * 12) / 3600  # Assuming 12s block time
+            logger.info(f"UID {uid:<4} | Age: {age_in_blocks:<7} blocks (~{age_in_hours:<5.1f} hours)")
+        logger.info("----------------")
+
 
     async def _get_drand_info(self) -> Dict[str, Any]:
         if not self._drand_info or time.time() - self._drand_info_last_update > 3600:
@@ -410,7 +461,11 @@ class DataLog:
 
         T = len(blocks)
         all_uids = self._get_all_uids_unsafe()
-        
+        # Map each observed block number to its index for O(1) lookup when searching
+        # for the price exactly `TARGET_BLOCK_DIFF` blocks ahead.
+        TARGET_BLOCK_DIFF = 300  # compute returns relative to +300 blockchain blocks
+        block_to_idx = {b: i for i, b in enumerate(blocks)}
+
         result = {}
         
         for asset in config.ASSETS:
@@ -432,15 +487,19 @@ class DataLog:
             
             asset_returns = []
             valid_embedding_indices = []
-            
-            for t in range(len(price_series) - config.LAG):
-                p_initial = price_series[t]
-                p_final = price_series[t + config.LAG]
 
-                if not np.isnan(p_initial) and not np.isnan(p_final):
-                    if p_initial > 0:
-                        asset_returns.append((p_final - p_initial) / p_initial)
-                        valid_embedding_indices.append(t)
+            # Calculate returns based on block numbers: look exactly TARGET_BLOCK_DIFF blocks ahead.
+            for t_idx, p_initial in enumerate(price_series):
+                target_block = blocks[t_idx] + TARGET_BLOCK_DIFF
+                j = block_to_idx.get(target_block)
+                if j is None:
+                    continue  # no price sample exactly 300 blocks ahead; skip
+
+                p_final = price_series[j]
+
+                if not np.isnan(p_initial) and not np.isnan(p_final) and p_initial > 0:
+                    asset_returns.append((p_final - p_initial) / p_initial)
+                    valid_embedding_indices.append(t_idx)
 
             if not asset_returns:
                 logger.warning(f"No valid returns calculated for {asset} after filtering.")
@@ -496,11 +555,20 @@ class DataLog:
         return price_array
 
     async def save(self, path: str) -> None:
+        """Snapshot and persist the datalog without blocking the event loop.
+
+        The critical section holding ``self._lock`` is now *only* long enough to
+        grab a reference to the object.  The heavy ``copy.deepcopy`` **and** the
+        gzip-pickle write both happen inside the default thread-pool executor,
+        so other coroutines can continue almost uninterrupted.
+        """
+
+        # Grab a reference under the lock for consistency.
         async with self._lock:
-            datalog_copy = copy.deepcopy(self)
+            datalog_ref = self  # reference only; no deepcopy while holding the lock
 
         try:
-            await asyncio.to_thread(_save_datalog, datalog_copy, path)
+            await asyncio.to_thread(_deepcopy_and_save, datalog_ref, path)
             logger.info(f"✅ Datalog saved to {path}")
         except Exception as e:
             logger.error(f"Failed to save datalog to {path}: {e}")
@@ -509,6 +577,9 @@ class DataLog:
     def load(path: str) -> "DataLog":
         logger.info(f"Fetching latest datalog from R2 bucket: {config.DATALOG_ARCHIVE_URL}")
         try:
+            # Ensure the target directory exists before trying to download.
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            
             url = config.DATALOG_ARCHIVE_URL
             r = requests.get(url, timeout=600, stream=True)
             r.raise_for_status()
@@ -535,8 +606,13 @@ class DataLog:
              logger.warning("Starting with a new, empty DataLog due to unexpected error.")
              return DataLog() 
 
-def _save_datalog(datalog: DataLog, path: str) -> None:
-    """Synchronous function to save the datalog to a file."""
+
+def _deepcopy_and_save(datalog_ref: "DataLog", path: str) -> None:
+    datalog_copy = copy.deepcopy(datalog_ref)
+    _save_datalog(datalog_copy, path)
+
+
+def _save_datalog(datalog: "DataLog", path: str) -> None:
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         
